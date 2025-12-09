@@ -131,7 +131,7 @@ func (c *replyCmd) reply(_ *fisk.ParseContext) error {
 
 		msg := nats.NewMsg(m.Reply)
 		if nc.HeadersSupported() && len(c.hdrs) > 0 {
-			err = iu.ParseStringsToMsgHeader(c.hdrs, i, msg)
+			err = iu.ParseStringsToMsgHeader(c.hdrs, i, msg, nil)
 			if err != nil {
 				return
 			}

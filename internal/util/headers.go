@@ -31,7 +31,7 @@ import (
 func ParseStringsToHeader(hdrs []string, seq int) (nats.Header, error) {
 	res := nats.Header{}
 
-	err := parseStringsToHeader(hdrs, seq, res)
+	err := parseStringsToHeader(hdrs, seq, res, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -40,8 +40,8 @@ func ParseStringsToHeader(hdrs []string, seq int) (nats.Header, error) {
 }
 
 // ParseStringsToMsgHeader parsers strings of headers like X:Y into a supplied msg headers
-func ParseStringsToMsgHeader(hdrs []string, seq int, msg *nats.Msg) error {
-	err := parseStringsToHeader(hdrs, seq, msg.Header)
+func ParseStringsToMsgHeader(hdrs []string, seq int, msg *nats.Msg, vars *VarState) error {
+	err := parseStringsToHeader(hdrs, seq, msg.Header, vars)
 	if err != nil {
 		return err
 	}
@@ -49,14 +49,14 @@ func ParseStringsToMsgHeader(hdrs []string, seq int, msg *nats.Msg) error {
 	return nil
 }
 
-func parseStringsToHeader(hdrs []string, seq int, res nats.Header) error {
+func parseStringsToHeader(hdrs []string, seq int, res nats.Header, vars *VarState) error {
 	for _, hdr := range hdrs {
 		parts := strings.SplitN(hdr, ":", 2)
 		if len(parts) != 2 {
 			return fmt.Errorf("invalid header %q", hdr)
 		}
 
-		val, err := PubReplyBodyTemplate(strings.TrimSpace(parts[1]), seq)
+		val, err := PubReplyBodyTemplate(strings.TrimSpace(parts[1]), seq, varsAndFuncs(vars)...)
 		if err != nil {
 			return fmt.Errorf("failed to parse Header template for %s: %s", parts[0], err)
 		}
@@ -65,6 +65,19 @@ func parseStringsToHeader(hdrs []string, seq int, res nats.Header) error {
 	}
 
 	return nil
+}
+
+func varsAndFuncs(vars *VarState) []PubOpt {
+	funcMap := make(template.FuncMap)
+	funcMap["SetVar"] = func(arg, value string) error {
+		vars.v[arg] = value
+		vars.v["__var__"+arg] = value
+		return nil
+	}
+	funcMap["GetVar"] = func(arg string) string {
+		return vars.v[arg]
+	}
+	return []PubOpt{WithVarState(vars), WithFuncMap(funcMap)}
 }
 
 type pubData struct {
@@ -81,9 +94,30 @@ func (p *pubData) ID() string {
 	return nuid.Next()
 }
 
+type VarState struct {
+	v map[string]string
+}
+
+func (s VarState) Template() string {
+	var res string
+	for kp := range s.v {
+		if !strings.HasPrefix(kp, "__var__") {
+			continue
+		}
+		k := strings.TrimPrefix(kp, "__var__")
+		res = fmt.Sprintf(`%s{{$%s:=GetVar %q}}`, res, k, kp)
+	}
+	return res
+}
+
+func NewVarState() *VarState {
+	return &VarState{v: make(map[string]string)}
+}
+
 type PubOpts struct {
 	funcMap template.FuncMap
 	request string
+	vars    *VarState
 }
 
 type PubOpt func(*PubOpts)
@@ -100,6 +134,12 @@ func WithFuncMap(funcMap template.FuncMap) PubOpt {
 		for k, v := range funcMap {
 			opts.funcMap[k] = v
 		}
+	}
+}
+
+func WithVarState(vars *VarState) PubOpt {
+	return func(opts *PubOpts) {
+		opts.vars = vars
 	}
 }
 
@@ -121,6 +161,11 @@ func PubReplyBodyTemplate(body string, ctr int, opts ...PubOpt) ([]byte, error) 
 	options := PubOpts{funcMap: funcMap}
 	for _, opt := range opts {
 		opt(&options)
+	}
+
+	var varsTemplate string
+	if options.vars != nil {
+		varsTemplate = options.vars.Template()
 	}
 
 	templ, err := template.New("body").Funcs(options.funcMap).Parse(varsTemplate + body)

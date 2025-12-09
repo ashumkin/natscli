@@ -44,12 +44,12 @@ func TestParseStringsToHeader(t *testing.T) {
 
 func TestParseStringsToMsgHeader(t *testing.T) {
 	msg := nats.NewMsg("")
-	err := ParseStringsToMsgHeader([]string{"A:1", "B"}, 0, msg)
+	err := ParseStringsToMsgHeader([]string{"A:1", "B"}, 0, msg, nil)
 	if err == nil || err.Error() != `invalid header "B"` {
 		t.Fatalf("expected invalid header error, got: %v", err)
 	}
 
-	err = ParseStringsToMsgHeader([]string{"A:1", "B:2", "C:{{ Count }}"}, 10, msg)
+	err = ParseStringsToMsgHeader([]string{"A:1", "B:2", "C:{{ Count }}"}, 10, msg, nil)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}

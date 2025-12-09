@@ -38,29 +38,32 @@ type Publisher struct {
 	UseStdin bool
 	Tracker  *progress.Tracker
 
-	reader      *bufio.Reader
-	progressBar progress.Writer
-	templates   bool
-	sendOn      string
-	opts        *options.Options
+	reader         *bufio.Reader
+	progressBar    progress.Writer
+	templates      bool
+	sendOn         string
+	opts           *options.Options
+	templateScript string
 }
 
 // PublisherConfig contains options for creating a new Publisher
 type PublisherConfig struct {
-	BodyIsSet  bool
-	ForceStdin bool
-	Count      int
-	Raw        bool
-	Templates  bool
-	Opts       *options.Options
+	BodyIsSet      bool
+	ForceStdin     bool
+	Count          int
+	Raw            bool
+	Templates      bool
+	Opts           *options.Options
+	TemplateScript string
 }
 
 // NewPublisher sets up stdin and the progress bar
 func NewPublisher(cfg PublisherConfig) (*Publisher, error) {
 	p := &Publisher{
-		templates: cfg.Templates,
-		sendOn:    sendOnEOF,
-		opts:      cfg.Opts,
+		templates:      cfg.Templates,
+		sendOn:         sendOnEOF,
+		templateScript: cfg.TemplateScript,
+		opts:           cfg.Opts,
 	}
 
 	p.UseStdin = !cfg.BodyIsSet && (IsTerminal() || cfg.ForceStdin)
@@ -137,24 +140,33 @@ func (p *Publisher) ReadStdin() (string, bool, error) {
 }
 
 // ParseTemplates applies template expansion to body and subject if templates are enabled.
-func (p *Publisher) ParseTemplates(body, subject string, ctr int) (string, string, error, error) {
+func (p *Publisher) ParseTemplates(body, subject string, ctr int) (string, string, *VarState, error, error) {
 	if !p.templates {
-		return body, subject, nil, nil
+		return body, subject, nil, nil, nil
 	}
 
-	expandedBody, bodyErr := PubReplyBodyTemplate(body, ctr)
-	expandedSubj, subjErr := PubReplyBodyTemplate(subject, ctr)
+	vars := NewVarState()
+	var bodyErr error
+	if p.templateScript != "" {
+		_, err := PubReplyBodyTemplate(p.templateScript, ctr, varsAndFuncs(vars)...)
+		if err != nil {
+			bodyErr = fmt.Errorf("could not parse init-template: %w", err)
+		}
+	}
+	var expandedBody []byte
+	expandedBody, bodyErr = PubReplyBodyTemplate(body, ctr, varsAndFuncs(vars)...)
+	expandedSubj, subjErr := PubReplyBodyTemplate(subject, ctr, varsAndFuncs(vars)...)
 
-	return string(expandedBody), string(expandedSubj), bodyErr, subjErr
+	return string(expandedBody), string(expandedSubj), vars, bodyErr, subjErr
 }
 
 // PrepareMsg creates a nats.Msg with subject, body, reply subject, and headers
-func (p *Publisher) PrepareMsg(subj, replyTo string, body []byte, hdrs []string, seq int) (*nats.Msg, error) {
+func (p *Publisher) PrepareMsg(subj, replyTo string, body []byte, hdrs []string, seq int, vars *VarState) (*nats.Msg, error) {
 	msg := nats.NewMsg(subj)
 	msg.Reply = replyTo
 	msg.Data = body
 
-	err := ParseStringsToMsgHeader(hdrs, seq, msg)
+	err := ParseStringsToMsgHeader(hdrs, seq, msg, vars)
 	if err != nil {
 		return nil, err
 	}

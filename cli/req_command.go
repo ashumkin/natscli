@@ -25,22 +25,23 @@ import (
 )
 
 type reqCmd struct {
-	subject      string
-	body         string
-	bodyIsSet    bool
-	req          bool
-	replyTo      string
-	raw          bool
-	hdrs         []string
-	cnt          int
-	replyCount   int
-	replyTimeout time.Duration
-	forceStdin   bool
-	translate    string
-	sendOn       string
-	quiet        bool
-	templates    bool
-	sleep        time.Duration
+	subject        string
+	body           string
+	bodyIsSet      bool
+	req            bool
+	replyTo        string
+	raw            bool
+	hdrs           []string
+	cnt            int
+	replyCount     int
+	replyTimeout   time.Duration
+	forceStdin     bool
+	translate      string
+	sendOn         string
+	quiet          bool
+	templates      bool
+	sleep          time.Duration
+	templateScript string
 }
 
 func configureReqCommand(app commandHost) {
@@ -82,6 +83,7 @@ Available template functions are:
 	req.Flag("force-stdin", "Force reading from stdin").UnNegatableBoolVar(&c.forceStdin)
 	req.Flag("send-on", "When to send data from stdin: 'eof' (default) or 'newline'").Default("eof").EnumVar(&c.sendOn, "newline", "eof")
 	req.Flag("templates", "Enables template functions in the body and subject (does not affect headers)").Default("true").BoolVar(&c.templates)
+	req.Flag("init-template", "Template expression to be used in templates (intended to use SetVar)").StringVar(&c.templateScript)
 }
 
 func init() {
@@ -92,7 +94,7 @@ func (c *reqCmd) doReq(nc *nats.Conn, pub *iu.Publisher) error {
 	logOutput := !c.raw && pub.Tracker == nil
 
 	for i := 1; i <= c.cnt; i++ {
-		body, subj, bodyErr, subjErr := pub.ParseTemplates(c.body, c.subject, i)
+		body, subj, vars, bodyErr, subjErr := pub.ParseTemplates(c.body, c.subject, i)
 		if bodyErr != nil {
 			log.Printf("Could not parse body template: %s", bodyErr)
 		}
@@ -103,7 +105,7 @@ func (c *reqCmd) doReq(nc *nats.Conn, pub *iu.Publisher) error {
 			log.Printf("Sending request on %q\n", subj)
 		}
 
-		msg, err := pub.PrepareMsg(subj, c.replyTo, []byte(body), c.hdrs, i)
+		msg, err := pub.PrepareMsg(subj, c.replyTo, []byte(body), c.hdrs, i, vars)
 		if err != nil {
 			return err
 		}
@@ -214,12 +216,13 @@ func (c *reqCmd) requestAction(_ *fisk.ParseContext) error {
 	}
 
 	pub, err := iu.NewPublisher(iu.PublisherConfig{
-		BodyIsSet:  c.bodyIsSet,
-		ForceStdin: c.forceStdin,
-		Count:      c.cnt,
-		Raw:        c.raw,
-		Templates:  c.templates,
-		Opts:       opts(),
+		BodyIsSet:      c.bodyIsSet,
+		ForceStdin:     c.forceStdin,
+		Count:          c.cnt,
+		Raw:            c.raw,
+		Templates:      c.templates,
+		TemplateScript: c.templateScript,
+		Opts:           opts(),
 	})
 	if err != nil {
 		return err

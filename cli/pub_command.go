@@ -45,7 +45,8 @@ type pubCmd struct {
 	templates  bool
 	atomic     bool
 
-	atomicPending []*nats.Msg
+	atomicPending  []*nats.Msg
+	templateScript string
 }
 
 func configurePubCommand(app commandHost) {
@@ -60,6 +61,10 @@ Multiple messages with random strings between 10 and 100 long:
 
    nats pub test --count 10 "Message {{Count}}: {{ Random 10 100 }}"
 
+Multiple messages with the *same* random value both in subject and body:
+
+   nats pub --init-template '{{ SetVar "rnd" (Random 10 100) }}' 'test.{{ $rnd }}' --count 10 "Message {{Count}}: {{ $rnd }}"
+
 Available template functions are:
 
    Count                the message number
@@ -71,6 +76,8 @@ Available template functions are:
    UUID                 a random UUID
    Random(min, max)     random string at least min long, at most max
    RandomInt(min, max)  random integer at least min long, at most max
+   SetVar "NAME" VALUE  set VALUE to the variable NAME (so, in template we can reference it with the $NAME)
+   GetVar "NAME"        get a value of variable NAME (previously set with SetVar)
 `
 
 	pub := app.Command("publish", "Generic data publish utility").Alias("pub").Action(c.publishAction)
@@ -88,6 +95,7 @@ Available template functions are:
 	pub.Flag("quiet", "Show just the output received").Short('q').UnNegatableBoolVar(&c.quiet)
 	pub.Flag("templates", "Enables template functions in the body and subject (does not affect headers)").Default("true").BoolVar(&c.templates)
 	pub.Flag("atomic", "Atomic batch publish to Jetstream (implies --jetstream)").UnNegatableBoolVar(&c.atomic)
+	pub.Flag("init-template", "Template expression to be used in templates (intended to use SetVar)").StringVar(&c.templateScript)
 }
 
 func init() {
@@ -147,7 +155,7 @@ func (c *pubCmd) writeAtomic(nc *nats.Conn) error {
 
 func (c *pubCmd) addToBatch(pub *iu.Publisher) error {
 	for i := 1; i <= c.cnt; i++ {
-		body, subj, bodyErr, subjErr := pub.ParseTemplates(c.body, c.subject, i)
+		body, subj, vars, bodyErr, subjErr := pub.ParseTemplates(c.body, c.subject, i)
 		if bodyErr != nil {
 			log.Printf("Could not parse body template: %s", bodyErr)
 		}
@@ -155,7 +163,7 @@ func (c *pubCmd) addToBatch(pub *iu.Publisher) error {
 			log.Printf("Could not parse subject template: %s", subjErr)
 		}
 
-		msg, err := pub.PrepareMsg(subj, c.replyTo, []byte(body), c.hdrs, i)
+		msg, err := pub.PrepareMsg(subj, c.replyTo, []byte(body), c.hdrs, i, vars)
 		if err != nil {
 			return err
 		}
@@ -173,7 +181,7 @@ func (c *pubCmd) addToBatch(pub *iu.Publisher) error {
 func (c *pubCmd) doJetstream(nc *nats.Conn, pub *iu.Publisher) error {
 	for i := 1; i <= c.cnt; i++ {
 		start := time.Now()
-		body, subj, bodyErr, subjErr := pub.ParseTemplates(c.body, c.subject, i)
+		body, subj, vars, bodyErr, subjErr := pub.ParseTemplates(c.body, c.subject, i)
 		if bodyErr != nil {
 			log.Printf("Could not parse body template: %s", bodyErr)
 		}
@@ -181,7 +189,7 @@ func (c *pubCmd) doJetstream(nc *nats.Conn, pub *iu.Publisher) error {
 			log.Printf("Could not parse subject template: %s", subjErr)
 		}
 
-		msg, err := pub.PrepareMsg(subj, c.replyTo, []byte(body), c.hdrs, i)
+		msg, err := pub.PrepareMsg(subj, c.replyTo, []byte(body), c.hdrs, i, vars)
 		if err != nil {
 			return err
 		}
@@ -326,7 +334,7 @@ func (c *pubCmd) publishNatsMsg(ctx context.Context, nc *nats.Conn, pub *iu.Publ
 			}
 
 			for i := 1; i <= c.cnt; i++ {
-				body, subj, bodyErr, subjErr := pub.ParseTemplates(c.body, c.subject, i)
+				body, subj, vars, bodyErr, subjErr := pub.ParseTemplates(c.body, c.subject, i)
 				if bodyErr != nil {
 					log.Printf("Could not parse body template: %s", bodyErr)
 				}
@@ -334,7 +342,7 @@ func (c *pubCmd) publishNatsMsg(ctx context.Context, nc *nats.Conn, pub *iu.Publ
 					log.Printf("Could not parse subject template: %s", subjErr)
 				}
 
-				msg, err := pub.PrepareMsg(subj, c.replyTo, []byte(body), c.hdrs, i)
+				msg, err := pub.PrepareMsg(subj, c.replyTo, []byte(body), c.hdrs, i, vars)
 				if err != nil {
 					return err
 				}
@@ -386,12 +394,13 @@ func (c *pubCmd) publishAction(_ *fisk.ParseContext) error {
 	}
 
 	pub, err := iu.NewPublisher(iu.PublisherConfig{
-		BodyIsSet:  c.bodyIsSet,
-		ForceStdin: c.forceStdin,
-		Count:      c.cnt,
-		Raw:        c.raw,
-		Templates:  c.templates,
-		Opts:       opts(),
+		BodyIsSet:      c.bodyIsSet,
+		ForceStdin:     c.forceStdin,
+		Count:          c.cnt,
+		Raw:            c.raw,
+		Templates:      c.templates,
+		TemplateScript: c.templateScript,
+		Opts:           opts(),
 	})
 	if err != nil {
 		return err
