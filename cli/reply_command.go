@@ -131,7 +131,7 @@ func (c *replyCmd) reply(_ *fisk.ParseContext) error {
 
 		msg := nats.NewMsg(m.Reply)
 		if nc.HeadersSupported() && len(c.hdrs) > 0 {
-			err = iu.ParseStringsToMsgHeader(c.hdrs, i, msg)
+			err = iu.ParseStringsToMsgHeader(c.hdrs, i, msg, nil)
 			if err != nil {
 				return
 			}
@@ -159,7 +159,7 @@ func (c *replyCmd) reply(_ *fisk.ParseContext) error {
 				rawCmd = strings.Replace(rawCmd, fmt.Sprintf("{{%d}}", i), t, -1)
 			}
 
-			parsedCmd, err := iu.PubReplyBodyTemplate(rawCmd, string(m.Data), i)
+			parsedCmd, err := iu.PubReplyBodyTemplate(rawCmd, string(m.Data), i, nil)
 			if err != nil {
 				log.Printf("Could not parse command template: %s", err)
 			}
@@ -216,7 +216,7 @@ func (c *replyCmd) reply(_ *fisk.ParseContext) error {
 				}
 			}
 		default:
-			body, err := iu.PubReplyBodyTemplate(c.body, string(m.Data), i)
+			body, err := iu.PubReplyBodyTemplate(c.body, string(m.Data), i, nil)
 			if err != nil {
 				log.Printf("Could not parse body template: %s", err)
 			}

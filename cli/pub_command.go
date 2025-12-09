@@ -60,7 +60,8 @@ type pubCmd struct {
 	templates    bool
 	atomic       bool
 
-	atomicPending []*nats.Msg
+	atomicPending  []*nats.Msg
+	templateScript string
 }
 
 func configurePubCommand(app commandHost) {
@@ -75,6 +76,10 @@ Multiple messages with random strings between 10 and 100 long:
 
    nats pub test --count 10 "Message {{Count}}: {{ Random 10 100 }}"
 
+Multiple messages with the *same* random value both in subject and body:
+
+   nats pub --init-template '{{ SetVar "rnd" (Random 10 100) }}' 'test.{{ $rnd }}' --count 10 "Message {{Count}}: {{ $rnd }}"
+
 Available template functions are:
 
    Count                the message number
@@ -86,6 +91,8 @@ Available template functions are:
    UUID                 a random UUID
    Random(min, max)     random string at least min long, at most max
    RandomInt(min, max)  random integer at least min long, at most max
+   SetVar "NAME" VALUE  set VALUE to the variable NAME (so, in template we can reference it with the $NAME)
+   GetVar "NAME"        get a value of variable NAME (previously set with SetVar)
 `
 
 	pub := app.Command("publish", "Generic data publish utility").Alias("pub").Action(c.publish)
@@ -103,6 +110,7 @@ Available template functions are:
 	pub.Flag("quiet", "Show just the output received").Short('q').UnNegatableBoolVar(&c.quiet)
 	pub.Flag("templates", "Enables template functions in the body and subject (does not affect headers)").Default("true").BoolVar(&c.templates)
 	pub.Flag("atomic", "Atomic batch publish to Jetstream (implies --jetstream)").UnNegatableBoolVar(&c.atomic)
+	pub.Flag("init-template", "Template expression to be used in templates (intended to use SetVar)").StringVar(&c.templateScript)
 
 	requestHelp := `Body and Header values of the messages may use Go templates to 
 create unique messages.
@@ -145,39 +153,46 @@ func init() {
 	registerCommand("pub", 11, configurePubCommand)
 }
 
-func (c *pubCmd) prepareMsg(subj string, body []byte, seq int) (*nats.Msg, error) {
+func (c *pubCmd) prepareMsg(subj string, body []byte, seq int, vars *iu.VarState) (*nats.Msg, error) {
 	msg := nats.NewMsg(subj)
 	msg.Reply = c.replyTo
 	msg.Data = body
 
-	return msg, iu.ParseStringsToMsgHeader(c.hdrs, seq, msg)
+	return msg, iu.ParseStringsToMsgHeader(c.hdrs, seq, msg, vars)
 }
 
-func (c *pubCmd) parseTemplates(request string, ctr int) (string, string) {
+func (c *pubCmd) parseTemplates(request string, ctr int) (string, string, *iu.VarState) {
+	vars := iu.NewVarState()
+	if c.templateScript != "" {
+		_, err := iu.PubReplyBodyTemplate(c.templateScript, request, ctr, vars)
+		if err != nil {
+			log.Printf("Could not parse init-template: %s", err)
+		}
+	}
 	if c.templates {
-		body, err := iu.PubReplyBodyTemplate(c.body, request, ctr)
+		body, err := iu.PubReplyBodyTemplate(c.body, request, ctr, vars)
 		if err != nil {
 			log.Printf("Could not parse body template: %s", err)
 		}
 
-		subj, err := iu.PubReplyBodyTemplate(c.subject, request, ctr)
+		subj, err := iu.PubReplyBodyTemplate(c.subject, request, ctr, vars)
 		if err != nil {
 			log.Printf("Could not parse subject template: %s", err)
 		}
-		return string(body), string(subj)
+		return string(body), string(subj), vars
 	}
-	return c.body, c.subject
+	return c.body, c.subject, vars
 }
 
 func (c *pubCmd) doReq(nc *nats.Conn, progress *progress.Tracker) error {
 	logOutput := !c.raw && progress == nil
 
 	for i := 1; i <= c.cnt; i++ {
-		body, subj := c.parseTemplates("", i)
+		body, subj, vars := c.parseTemplates("", i)
 		if logOutput {
 			log.Printf("Sending request on %q\n", subj)
 		}
-		msg, err := c.prepareMsg(subj, []byte(body), i)
+		msg, err := c.prepareMsg(subj, []byte(body), i, vars)
 		if err != nil {
 			return err
 		}
@@ -326,9 +341,9 @@ func (c *pubCmd) writeAtomic(nc *nats.Conn) error {
 
 func (c *pubCmd) addToBatch() error {
 	for i := 1; i <= c.cnt; i++ {
-		body, subj := c.parseTemplates("", i)
+		body, subj, vars := c.parseTemplates("", i)
 
-		msg, err := c.prepareMsg(subj, []byte(body), i)
+		msg, err := c.prepareMsg(subj, []byte(body), i, vars)
 		if err != nil {
 			return err
 		}
@@ -346,9 +361,9 @@ func (c *pubCmd) addToBatch() error {
 func (c *pubCmd) doJetstream(nc *nats.Conn, progress *progress.Tracker) error {
 	for i := 1; i <= c.cnt; i++ {
 		start := time.Now()
-		body, subj := c.parseTemplates("", i)
+		body, subj, vars := c.parseTemplates("", i)
 
-		msg, err := c.prepareMsg(subj, []byte(body), i)
+		msg, err := c.prepareMsg(subj, []byte(body), i, vars)
 		if err != nil {
 			return err
 		}
@@ -551,9 +566,9 @@ func (c *pubCmd) publish(_ *fisk.ParseContext) error {
 			}
 
 			for i := 1; i <= c.cnt; i++ {
-				body, subj := c.parseTemplates("", i)
+				body, subj, vars := c.parseTemplates("", i)
 
-				msg, err := c.prepareMsg(subj, []byte(body), i)
+				msg, err := c.prepareMsg(subj, []byte(body), i, vars)
 				if err != nil {
 					errCh <- err
 					return
