@@ -15,6 +15,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -31,14 +32,15 @@ import (
 )
 
 type replyCmd struct {
-	subject string
-	body    string
-	queue   string
-	command string
-	echo    bool
-	sleep   time.Duration
-	limit   uint
-	hdrs    []string
+	subject          string
+	body             string
+	queue            string
+	command          string
+	logCommandStdErr bool
+	echo             bool
+	sleep            time.Duration
+	limit            uint
+	hdrs             []string
 }
 
 func configureReplyCommand(app commandHost) {
@@ -87,6 +89,7 @@ Available template functions are:
 	act.Arg("body", "Reply body").StringVar(&c.body)
 	act.Flag("echo", "Echo back what is received").UnNegatableBoolVar(&c.echo)
 	act.Flag("command", "Runs a command and responds with the output if exit code was 0").StringVar(&c.command)
+	act.Flag("command-stderr-to-log", "Log command's std err rather then print it to output").Default("false").BoolVar(&c.logCommandStdErr)
 	act.Flag("queue", "Queue group name").Default("NATS-RPLY-22").Short('q').StringVar(&c.queue)
 	act.Flag("sleep", "Inject a random sleep delay between replies up to this duration max").PlaceHolder("MAX").DurationVar(&c.sleep)
 	act.Flag("header", "Adds headers to the message using K:V format").Short('H').StringsVar(&c.hdrs)
@@ -181,11 +184,37 @@ func (c *replyCmd) reply(_ *fisk.ParseContext) error {
 			cmd.Env = os.Environ()
 			cmd.Env = append(cmd.Env, fmt.Sprintf("NATS_REQUEST_SUBJECT=%s", m.Subject))
 			cmd.Env = append(cmd.Env, fmt.Sprintf("NATS_REQUEST_BODY=%s", string(m.Data)))
-			msg.Data, err = cmd.CombinedOutput()
-			if err != nil {
-				log.Printf("Command %q failed to run: %s", rawCmd, err)
+			if !c.logCommandStdErr {
+				msg.Data, err = cmd.CombinedOutput()
+			} else {
+				stderrPipe, err := cmd.StderrPipe()
+				if err != nil {
+					log.Printf("Could not get stderr pipe: %s", err)
+					break
+				}
+				stdoutPipe, err := cmd.StdoutPipe()
+				if err != nil {
+					log.Printf("Could not get stderr pipe: %s", err)
+					break
+				}
+				err = cmd.Start()
+				if err != nil {
+					log.Printf("Command %q failed to start: %s", rawCmd, err)
+					break
+				}
+				stderrAll, err := io.ReadAll(stderrPipe)
+				if err != nil {
+					log.Printf("error reading stderr", err)
+				}
+				log.Printf("STDERR: %s\n", string(stderrAll))
+				msg.Data, err = io.ReadAll(stdoutPipe)
+				if err != nil {
+					log.Printf("error reading stdout", err)
+				}
+				if err := cmd.Wait(); err != nil {
+					log.Printf("Command %q failed: %s", rawCmd, err)
+				}
 			}
-
 		default:
 			body, err := iu.PubReplyBodyTemplate(c.body, string(m.Data), i)
 			if err != nil {
