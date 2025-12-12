@@ -77,14 +77,15 @@ Multiple messages with random strings between 10 and 100 long:
 
 Available template functions are:
 
-   Count            the message number
-   TimeStamp        RFC3339 format current time
-   Unix             seconds since 1970 in UTC
-   UnixNano         nano seconds since 1970 in UTC
-   Time             the current time
-   ID               an unique ID
-   UUID             a random UUID
-   Random(min, max) random string at least min long, at most max
+   Count                the message number
+   TimeStamp            RFC3339 format current time
+   Unix                 seconds since 1970 in UTC
+   UnixNano             nano seconds since 1970 in UTC
+   Time                 the current time
+   ID                   an unique ID
+   UUID                 a random UUID
+   Random(min, max)     random string at least min long, at most max
+   RandomInt(min, max)  random integer at least min long, at most max
 `
 
 	pub := app.Command("publish", "Generic data publish utility").Alias("pub").Action(c.publish)
@@ -114,14 +115,15 @@ Multiple messages with random strings between 10 and 100 long:
 
 Available template functions are:
 
-   Count            the message number
-   TimeStamp        RFC3339 format current time
-   Unix             seconds since 1970 in UTC
-   UnixNano         nano seconds since 1970 in UTC
-   Time             the current time
-   ID               an unique ID
-   UUID             a random UUID
-   Random(min, max) random string at least min long, at most max
+   Count                the message number
+   TimeStamp            RFC3339 format current time
+   Unix                 seconds since 1970 in UTC
+   UnixNano             nano seconds since 1970 in UTC
+   Time                 the current time
+   ID                   an unique ID
+   UUID                 a random UUID
+   Random(min, max)     random string at least min long, at most max
+   RandomInt(min, max)  random integer at least min long, at most max
 `
 
 	req := app.Command("request", "Generic request-reply request utility").Alias("req").Action(c.publish)
