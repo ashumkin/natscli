@@ -173,11 +173,10 @@ func (c *pubCmd) doReq(nc *nats.Conn, progress *progress.Tracker) error {
 	logOutput := !c.raw && progress == nil
 
 	for i := 1; i <= c.cnt; i++ {
-		if logOutput {
-			log.Printf("Sending request on %q\n", c.subject)
-		}
-
 		body, subj := c.parseTemplates("", i)
+		if logOutput {
+			log.Printf("Sending request on %q\n", subj)
+		}
 		msg, err := c.prepareMsg(subj, []byte(body), i)
 		if err != nil {
 			return err
@@ -337,7 +336,7 @@ func (c *pubCmd) addToBatch() error {
 		c.atomicPending = append(c.atomicPending, msg)
 
 		if !c.quiet {
-			log.Printf("Adding %d bytes to batch on subject %q\n", len(body), c.subject)
+			log.Printf("Adding %d bytes to batch on subject %q\n", len(body), subj)
 		}
 	}
 
@@ -355,7 +354,7 @@ func (c *pubCmd) doJetstream(nc *nats.Conn, progress *progress.Tracker) error {
 		}
 
 		if !c.quiet {
-			log.Printf("Published %d bytes to %q\n", len(body), c.subject)
+			log.Printf("Published %d bytes to %q\n", len(body), subj)
 		}
 		resp, err := nc.RequestMsg(msg, opts().Timeout)
 		if err != nil {
@@ -579,7 +578,7 @@ func (c *pubCmd) publish(_ *fisk.ParseContext) error {
 
 				if progbar == nil {
 					if !c.quiet {
-						log.Printf("Published %d bytes to %q\n", len(body), c.subject)
+						log.Printf("Published %d bytes to %q\n", len(body), subj)
 					}
 				} else {
 					tracker.Increment(1)
