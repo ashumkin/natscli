@@ -13,7 +13,9 @@
 
 package util
 
-import "math/rand/v2"
+import (
+	"math/rand/v2"
+)
 
 var letterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 var passwordRunes = append(letterRunes, []rune("@#_-%^&()")...)
@@ -51,4 +53,24 @@ func RandomString(shortest uint, longest uint) string {
 	}
 
 	return string(b)
+}
+
+// RandomInt generates a random integer [min, max)
+func RandomInt(min uint, max uint) int {
+	if min > max {
+		min, max = max, min
+	}
+
+	var desired int
+
+	switch {
+	case int(max)-int(min) < 0:
+		desired = int(min) + rand.IntN(int(max))
+	case max == min:
+		desired = int(min)
+	default:
+		desired = int(min) + rand.IntN(int(max-min))
+	}
+
+	return desired
 }

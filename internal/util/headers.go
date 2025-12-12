@@ -86,6 +86,7 @@ func PubReplyBodyTemplate(body string, request string, ctr int) ([]byte, error) 
 	now := time.Now()
 	funcMap := template.FuncMap{
 		"Random":    RandomString,
+		"RandomInt": RandomInt,
 		"Count":     func() int { return ctr },
 		"Cnt":       func() int { return ctr },
 		"Unix":      func() int64 { return now.Unix() },

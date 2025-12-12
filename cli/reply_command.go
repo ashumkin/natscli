@@ -15,7 +15,6 @@ package cli
 
 import (
 	"fmt"
-	iu "github.com/nats-io/natscli/internal/util"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -23,6 +22,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	iu "github.com/nats-io/natscli/internal/util"
 
 	"github.com/choria-io/fisk"
 	"github.com/kballard/go-shellquote"
@@ -67,15 +68,16 @@ The body and Header values of the messages may use Go templates to create unique
 
 Available template functions are:
 
-   Count            the message number
-   TimeStamp        RFC3339 format current time
-   Unix             seconds since 1970 in UTC
-   UnixNano         nano seconds since 1970 in UTC
-   Time             the current time
-   ID               an unique ID
-   UUID             a random UUID
-   Request          the request payload
-   Random(min, max) random string at least min long, at most max
+   Count                the message number
+   TimeStamp            RFC3339 format current time
+   Unix                 seconds since 1970 in UTC
+   UnixNano             nano seconds since 1970 in UTC
+   Time                 the current time
+   ID                   an unique ID
+   UUID                 a random UUID
+   Request              the request payload
+   Random(min, max)     random string at least min long, at most max
+   RandomInt(min, max)  random integer at least min long, at most max
 `
 
 	act := app.Command("reply", "Generic service reply utility").Action(c.reply)
