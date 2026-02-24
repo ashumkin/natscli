@@ -14,11 +14,16 @@
 package cli
 
 import (
+	"context"
 	"math"
 	"os/signal"
+	"sort"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/HdrHistogram/hdrhistogram-go"
 	"github.com/choria-io/fisk"
 	"github.com/nats-io/nats.go"
 	iu "github.com/nats-io/natscli/internal/util"
@@ -42,6 +47,18 @@ type reqCmd struct {
 	templates      bool
 	sleep          time.Duration
 	templateScript string
+	workerCount    int
+	errCount       atomic.Int64
+	successCount   atomic.Int64
+	toPrintStats   bool
+	mx             sync.Mutex
+	durations      []time.Duration
+}
+
+type reqItem struct {
+	nc   *nats.Conn
+	pub  *iu.Publisher
+	body string
 }
 
 func configureReqCommand(app commandHost) {
@@ -55,6 +72,10 @@ create unique messages.
 Multiple messages with random strings between 10 and 100 long:
 
    nats request test --count 10 "Message {{Count}}: {{ Random 10 100 }}"
+
+Multiple messages from STDIN with 20 concurrent workers:
+
+   nats request test --send-on newline --force-stdin --workers 20 < FILE
 
 Available template functions are:
 
@@ -84,17 +105,28 @@ Available template functions are:
 	req.Flag("send-on", "When to send data from stdin: 'eof' (default) or 'newline'").Default("eof").EnumVar(&c.sendOn, "newline", "eof")
 	req.Flag("templates", "Enables template functions in the body and subject (does not affect headers)").Default("true").BoolVar(&c.templates)
 	req.Flag("init-template", "Template expression to be used in templates (intended to use SetVar)").StringVar(&c.templateScript)
+	req.Flag("workers", "Worker count").Default("1").IntVar(&c.workerCount)
+	req.Flag("print-stats", "Print statistics after all messages sent").Default("false").BoolVar(&c.toPrintStats)
 }
 
 func init() {
 	registerCommand("req", 11, configureReqCommand)
 }
 
-func (c *reqCmd) doReq(nc *nats.Conn, pub *iu.Publisher) error {
+func (c *reqCmd) doReq(ctx context.Context, nc *nats.Conn, pub *iu.Publisher, body string) {
 	logOutput := !c.raw && pub.Tracker == nil
 
 	for i := 1; i <= c.cnt; i++ {
-		body, subj, vars, bodyErr, subjErr := pub.ParseTemplates(c.body, c.subject, i)
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		bdy, subj, vars, bodyErr, subjErr := pub.ParseTemplates(body, c.subject, i)
+		if logOutput {
+			log.Printf("Sending request on %q: %q\n", subj, bdy)
+		}
+
 		if bodyErr != nil {
 			log.Printf("Could not parse body template: %s", bodyErr)
 		}
@@ -105,21 +137,21 @@ func (c *reqCmd) doReq(nc *nats.Conn, pub *iu.Publisher) error {
 			log.Printf("Sending request on %q\n", subj)
 		}
 
-		msg, err := pub.PrepareMsg(subj, c.replyTo, []byte(body), c.hdrs, i, vars)
+		msg, err := pub.PrepareMsg(subj, c.replyTo, []byte(bdy), c.hdrs, i, vars)
 		if err != nil {
-			return err
+			return
 		}
 
 		msg.Reply = nc.NewRespInbox()
 
 		s, err := nc.SubscribeSync(msg.Reply)
 		if err != nil {
-			return err
+			return
 		}
 
 		err = nc.PublishMsg(msg)
 		if err != nil {
-			return err
+			return
 		}
 
 		if pub.Tracker != nil {
@@ -140,18 +172,25 @@ func (c *reqCmd) doReq(nc *nats.Conn, pub *iu.Publisher) error {
 		for {
 			m, err := s.NextMsg(timeout)
 			if err != nil {
+				c.incErrCount()
 				if err == nats.ErrTimeout {
+					if c.cnt == 1 {
+						return
+					}
 					// continue to publish additional messages.
 					break
 				}
 				if err == nats.ErrNoResponders {
 					log.Printf("No responders are available")
-					return nil
 				}
-				return err
+				return
 			}
+			c.incSuccessCount()
 
 			rtt := time.Since(start)
+			c.mx.Lock()
+			c.durations = append(c.durations, rtt)
+			c.mx.Unlock()
 
 			switch {
 			case c.raw:
@@ -198,12 +237,18 @@ func (c *reqCmd) doReq(nc *nats.Conn, pub *iu.Publisher) error {
 			}
 		}
 	}
-	return nil
+	return
 }
 
 func (c *reqCmd) requestAction(_ *fisk.ParseContext) error {
+	reqQueue := make(chan reqItem)
+	c.durations = make([]time.Duration, 0, c.cnt*c.workerCount)
+
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
 	defer cancel()
+
+	wg := sync.WaitGroup{}
+	go c.runPool(ctx, &wg, reqQueue)
 
 	nc, err := newNatsConn("", natsOpts()...)
 	if err != nil {
@@ -227,7 +272,13 @@ func (c *reqCmd) requestAction(_ *fisk.ParseContext) error {
 	if err != nil {
 		return err
 	}
-	defer pub.StopProgress()
+	start := time.Now()
+	defer func() {
+		pub.StopProgress()
+		if c.toPrintStats {
+			c.printStats(time.Since(start), c.durations)
+		}
+	}()
 
 	if c.sendOn == "newline" {
 		pub.SetSendOnNewLine()
@@ -238,11 +289,14 @@ func (c *reqCmd) requestAction(_ *fisk.ParseContext) error {
 	}
 
 	eof := c.bodyIsSet
-
-	return pub.Run(ctx, func() error {
+	err = pub.Run(ctx, func() error {
+		defer close(reqQueue)
 		for {
+			body := c.body
 			if pub.UseStdin {
-				body, newEof, err := pub.ReadStdin()
+				var newEof bool
+				var err error
+				body, newEof, err = pub.ReadStdin()
 				if err != nil {
 					return err
 				}
@@ -252,17 +306,97 @@ func (c *reqCmd) requestAction(_ *fisk.ParseContext) error {
 				if body == "" && eof {
 					return nil
 				}
-				c.body = body
 			}
 
-			err := c.doReq(nc, pub)
-			if err != nil {
-				return err
-			}
-
+			reqQueue <- reqItem{nc: nc, pub: pub, body: body}
 			if pub.IsSendOnEOF() || eof {
 				return nil
 			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
 		}
 	})
+	wg.Wait()
+
+	return err
+}
+
+func (c *reqCmd) runPool(ctx context.Context, wg *sync.WaitGroup, queue chan reqItem) {
+	for range c.workerCount {
+		wg.Go(func() {
+			for item := range queue {
+				c.doReq(ctx, item.nc, item.pub, item.body)
+			}
+		})
+	}
+}
+
+// Make time durations a bit prettier.
+func (c *reqCmd) fmtDur(t time.Duration) time.Duration {
+	// e.g 234us, 4.567ms, 1.234567s
+	return t.Truncate(time.Microsecond)
+}
+
+func (c *reqCmd) printStats(duration time.Duration, durations []time.Duration) {
+	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+
+	var highestTrackableValue int64
+	if len(durations) > 0 {
+		highestTrackableValue = int64(durations[len(durations)-1])
+	}
+	h := hdrhistogram.New(1, highestTrackableValue, 5)
+	for _, d := range durations {
+		h.RecordValue(int64(d))
+	}
+
+	log.Printf("\n=====  Statistics =====\n"+
+		"    time taken: %s (%.2f RPS)\n"+
+		"    requests succeeded: %d/%d (%.2f%%)\n"+
+		"    request errors: %d/%d (%.2f%%)\n"+
+		"=====  RTT Percentiles: =====\n"+
+		"    50:       %v\n"+
+		"    75:       %v\n"+
+		"    90:       %v\n"+
+		"    99:       %v\n"+
+		"    100:      %v\n",
+		c.fmtDur(duration), c.rps(duration),
+		c.successCount.Load(), c.allReqCount(), c.successPercent(),
+		c.errCount.Load(), c.allReqCount(), c.errPercent(),
+		c.fmtDur(time.Duration(h.ValueAtQuantile(50))),
+		c.fmtDur(time.Duration(h.ValueAtQuantile(75))),
+		c.fmtDur(time.Duration(h.ValueAtQuantile(90))),
+		c.fmtDur(time.Duration(h.ValueAtQuantile(99))),
+		c.fmtDur(time.Duration(h.ValueAtQuantile(100))),
+	)
+}
+
+func (c *reqCmd) incErrCount() {
+	c.errCount.Add(1)
+}
+
+func (c *reqCmd) incSuccessCount() {
+	c.successCount.Add(1)
+}
+
+func (c *reqCmd) allReqCount() int64 {
+	return c.successCount.Load() + c.errCount.Load()
+}
+
+func (c *reqCmd) successPercent() float64 {
+	return 100 * float64(c.successCount.Load()) / float64(c.allReqCount())
+}
+
+func (c *reqCmd) errPercent() float64 {
+	return 100 * float64(c.errCount.Load()) / float64(c.allReqCount())
+}
+
+func (c *reqCmd) rps(duration time.Duration) float64 {
+	if duration == 0 {
+		// impossible(?) but just to be sure and avoid division by zero
+		return 0
+	}
+	return float64(c.allReqCount()) / duration.Seconds()
 }
