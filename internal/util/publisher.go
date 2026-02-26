@@ -142,8 +142,8 @@ func (p *Publisher) ParseTemplates(body, subject string, ctr int) (string, strin
 		return body, subject, nil, nil
 	}
 
-	expandedBody, bodyErr := PubReplyBodyTemplate(body, "", ctr)
-	expandedSubj, subjErr := PubReplyBodyTemplate(subject, "", ctr)
+	expandedBody, bodyErr := PubReplyBodyTemplate(body, ctr)
+	expandedSubj, subjErr := PubReplyBodyTemplate(subject, ctr)
 
 	return string(expandedBody), string(expandedSubj), bodyErr, subjErr
 }

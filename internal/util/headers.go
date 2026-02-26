@@ -56,7 +56,7 @@ func parseStringsToHeader(hdrs []string, seq int, res nats.Header) error {
 			return fmt.Errorf("invalid header %q", hdr)
 		}
 
-		val, err := PubReplyBodyTemplate(strings.TrimSpace(parts[1]), "", seq)
+		val, err := PubReplyBodyTemplate(strings.TrimSpace(parts[1]), seq)
 		if err != nil {
 			return fmt.Errorf("failed to parse Header template for %s: %s", parts[0], err)
 		}
@@ -81,8 +81,30 @@ func (p *pubData) ID() string {
 	return nuid.Next()
 }
 
+type PubOpts struct {
+	funcMap template.FuncMap
+	request string
+}
+
+type PubOpt func(*PubOpts)
+
+func WithRequest(request string) PubOpt {
+	return func(opts *PubOpts) {
+		opts.funcMap["Request"] = func() string { return request }
+		opts.request = request
+	}
+}
+
+func WithFuncMap(funcMap template.FuncMap) PubOpt {
+	return func(opts *PubOpts) {
+		for k, v := range funcMap {
+			opts.funcMap[k] = v
+		}
+	}
+}
+
 // PubReplyBodyTemplate parses a message body using the usual template functions we support as standard
-func PubReplyBodyTemplate(body string, request string, ctr int) ([]byte, error) {
+func PubReplyBodyTemplate(body string, ctr int, opts ...PubOpt) ([]byte, error) {
 	now := time.Now()
 	funcMap := template.FuncMap{
 		"Random":    RandomString,
@@ -96,12 +118,12 @@ func PubReplyBodyTemplate(body string, request string, ctr int) ([]byte, error) 
 		"ID":        func() string { return nuid.Next() },
 		"UUID":      func() string { return uuid.New().String() },
 	}
-
-	if request != "" {
-		funcMap["Request"] = func() string { return request }
+	options := PubOpts{funcMap: funcMap}
+	for _, opt := range opts {
+		opt(&options)
 	}
 
-	templ, err := template.New("body").Funcs(funcMap).Parse(body)
+	templ, err := template.New("body").Funcs(options.funcMap).Parse(varsTemplate + body)
 	if err != nil {
 		return []byte(body), err
 	}
@@ -114,7 +136,7 @@ func PubReplyBodyTemplate(body string, request string, ctr int) ([]byte, error) 
 		UnixNano:  now.UnixNano(),
 		TimeStamp: now.Format(time.RFC3339),
 		Time:      now.Format(time.Kitchen),
-		Request:   request,
+		Request:   options.request,
 	})
 	if err != nil {
 		return []byte(body), err
