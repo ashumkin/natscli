@@ -17,6 +17,7 @@ import (
 	"context"
 	"math"
 	"os/signal"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -53,6 +54,7 @@ type reqCmd struct {
 	toPrintStats   bool
 	mx             sync.Mutex
 	durations      []time.Duration
+	errorHeader    map[string]string
 }
 
 type reqItem struct {
@@ -62,7 +64,7 @@ type reqItem struct {
 }
 
 func configureReqCommand(app commandHost) {
-	c := &reqCmd{}
+	c := &reqCmd{errorHeader: make(map[string]string)}
 
 	requestHelp := `Body and Header values of the messages may use Go templates to
 create unique messages.
@@ -107,6 +109,7 @@ Available template functions are:
 	req.Flag("init-template", "Template expression to be used in templates (intended to use SetVar)").StringVar(&c.templateScript)
 	req.Flag("workers", "Worker count").Default("1").IntVar(&c.workerCount)
 	req.Flag("print-stats", "Print statistics after all messages sent").Default("false").BoolVar(&c.toPrintStats)
+	req.Flag("error-by-header", "Count errors if header values present in response").StringMapVar(&c.errorHeader)
 }
 
 func init() {
@@ -185,7 +188,11 @@ func (c *reqCmd) doReq(ctx context.Context, nc *nats.Conn, pub *iu.Publisher, bo
 				}
 				return
 			}
-			c.incSuccessCount()
+			if c.errorIfHeader() && len(m.Header) > 0 && c.ifErrorByHeader(m.Header) {
+				c.incErrCount()
+			} else {
+				c.incSuccessCount()
+			}
 
 			rtt := time.Since(start)
 			c.mx.Lock()
@@ -399,4 +406,21 @@ func (c *reqCmd) rps(duration time.Duration) float64 {
 		return 0
 	}
 	return float64(c.allReqCount()) / duration.Seconds()
+}
+
+func (c *reqCmd) errorIfHeader() bool {
+	return len(c.errorHeader) > 0
+}
+
+func (c *reqCmd) ifErrorByHeader(header nats.Header) bool {
+	for h, v := range header {
+		for k, vv := range c.errorHeader {
+			if h == k {
+				if slices.Contains(v, vv) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
