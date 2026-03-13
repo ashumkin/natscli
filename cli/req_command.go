@@ -55,6 +55,7 @@ type reqCmd struct {
 	mx             sync.Mutex
 	durations      []time.Duration
 	errorHeader    map[string]string
+	showProgress   bool
 }
 
 type reqItem struct {
@@ -110,6 +111,7 @@ Available template functions are:
 	req.Flag("workers", "Worker count").Default("1").IntVar(&c.workerCount)
 	req.Flag("print-stats", "Print statistics after all messages sent").Default("false").BoolVar(&c.toPrintStats)
 	req.Flag("error-by-header", "Count errors if header values present in response").StringMapVar(&c.errorHeader)
+	req.Flag("show-progress", "Show progress explicitly (when read from STDIN").BoolVar(&c.showProgress)
 }
 
 func init() {
@@ -275,6 +277,7 @@ func (c *reqCmd) requestAction(_ *fisk.ParseContext) error {
 		Templates:      c.templates,
 		TemplateScript: c.templateScript,
 		Opts:           opts(),
+		ShowProgress:   c.showProgress,
 	})
 	if err != nil {
 		return err

@@ -55,6 +55,11 @@ type PublisherConfig struct {
 	Templates      bool
 	Opts           *options.Options
 	TemplateScript string
+	ShowProgress   bool
+}
+
+func (c PublisherConfig) IsToShowProgress() bool {
+	return c.ShowProgress || c.Count > 10 && !c.Raw
 }
 
 // NewPublisher sets up stdin and the progress bar
@@ -80,10 +85,14 @@ func NewPublisher(cfg PublisherConfig) (*Publisher, error) {
 		}()
 	}
 
-	if cfg.Count > 20 && !cfg.Raw {
+	if cfg.IsToShowProgress() {
 		var err error
+		total := int64(cfg.Count)
+		if p.UseStdin {
+			total = 0
+		}
 		p.progressBar, p.Tracker, err = NewProgress(cfg.Opts, &progress.Tracker{
-			Total: int64(cfg.Count),
+			Total: total,
 		})
 		if err != nil {
 			return nil, err
@@ -175,10 +184,15 @@ func (p *Publisher) PrepareMsg(subj, replyTo string, body []byte, hdrs []string,
 }
 
 func (p *Publisher) StopProgress() {
-	if p.progressBar != nil {
-		p.progressBar.Stop()
-		time.Sleep(300 * time.Millisecond)
+	if p.progressBar == nil {
+		return
 	}
+	if p.UseStdin {
+		// set 100%
+		p.Tracker.SetValue(p.Tracker.Total)
+	}
+	p.progressBar.Stop()
+	time.Sleep(300 * time.Millisecond)
 }
 
 func (p *Publisher) Run(ctx context.Context, callback func() error) error {
